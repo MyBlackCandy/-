@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import get_db_connection, get_user_role, is_off_day, get_monthly_stats, BKK_TZ, get_overtime_activities
+from database import init_db
 
 # --- ⚙️ 系统配置 (System Configuration) ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -196,6 +197,7 @@ async def monitor_overtime(context: ContextTypes.DEFAULT_TYPE):
 
 # --- 🚀 Main ---
 def main():
+    init_db()
     app = Application.builder().token(TOKEN).build()
     
     # 指令注册 (Chinese Commands)
