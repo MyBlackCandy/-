@@ -7,10 +7,19 @@ import pytz
 BKK_TZ = pytz.timezone('Asia/Bangkok')
 
 def get_db_connection():
-    """连接到 PostgreSQL 数据库 (Railway)"""
+    """连接到 PostgreSQL 数据库 (优先使用 Public URL 以确保稳定性)"""
     try:
-        url = os.getenv('DATABASE_URL').replace("postgres://", "postgresql://", 1)
-        return psycopg2.connect(url, sslmode='require')
+        # พยายามดึง Public URL ก่อน ถ้าไม่มีค่อยใช้ Internal URL จาก Railway
+        db_url = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
+        if not db_url:
+            print("❌ Error: No database URL found in variables!")
+            return None
+        
+        # ปรับรูปแบบ URL ให้รองรับ psycopg2
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+            
+        return psycopg2.connect(db_url, sslmode='require')
     except Exception as e:
         print(f"❌ 数据库连接错误: {e}")
         return None
@@ -40,7 +49,9 @@ def init_db():
 def get_user_role(user_id, chat_id):
     master_id = os.getenv('ADMIN_ID')
     if str(user_id) == str(master_id): return "master"
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    if not conn: return None
+    cursor = conn.cursor()
     cursor.execute("SELECT expire_date FROM admins WHERE user_id = %s", (user_id,))
     res_admin = cursor.fetchone()
     if res_admin and res_admin[0] > datetime.utcnow():
@@ -51,18 +62,10 @@ def get_user_role(user_id, chat_id):
     if res_user: return "user" if res_user[0] else "fired"
     return None
 
-def is_off_day(chat_id, target_date):
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("SELECT off_days FROM chat_settings WHERE chat_id = %s", (chat_id,))
-    res = cursor.fetchone()
-    cursor.close(); conn.close()
-    if not res or not res[0]: return False
-    day_name, date_str = target_date.strftime('%A'), target_date.strftime('%Y-%m-%d')
-    off_list = [x.strip() for x in res[0].split(',')]
-    return day_name in off_list or date_str in off_list
-
 def get_monthly_stats(user_id, chat_id, month, year):
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    if not conn: return 0, 0, 0
+    cursor = conn.cursor()
     cursor.execute("SELECT COUNT(DISTINCT work_date), SUM(late_mins) FROM attendance WHERE user_id = %s AND chat_id = %s AND EXTRACT(MONTH FROM work_date) = %s AND EXTRACT(YEAR FROM work_date) = %s", (user_id, chat_id, month, year))
     att_res = cursor.fetchone()
     cursor.execute("SELECT COUNT(*) FROM leave_requests WHERE user_id = %s AND chat_id = %s AND status = 'APPROVED' AND EXTRACT(MONTH FROM timestamp) = %s AND EXTRACT(YEAR FROM timestamp) = %s", (user_id, chat_id, month, year))
@@ -71,7 +74,9 @@ def get_monthly_stats(user_id, chat_id, month, year):
     return (att_res[0] or 0), (att_res[1] or 0), (lve_res[0] or 0)
 
 def get_overtime_activities(chat_id):
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    if not conn: return []
+    cursor = conn.cursor()
     cursor.execute("SELECT toilet_limit, smoke_limit FROM chat_settings WHERE chat_id = %s", (chat_id,))
     limits = cursor.fetchone() or (15, 10)
     cursor.execute("SELECT l.user_id, u.username, l.type, l.start_at FROM activity_logs l JOIN users u ON l.user_id = u.user_id AND l.chat_id = u.chat_id WHERE l.chat_id = %s AND l.end_at IS NULL", (chat_id,))
