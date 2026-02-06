@@ -1,27 +1,26 @@
 import os
-import re
 import pytz
 import logging
 from datetime import datetime, time, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from database import get_db_connection, get_user_role, is_off_day, get_monthly_stats, BKK_TZ, get_overtime_activities, init_db
+from database import get_db_connection, get_user_role, get_monthly_stats, BKK_TZ, get_overtime_activities, init_db
 
 # --- ⚙️ 系统配置 ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 TOKEN = os.getenv('TOKEN')
 MASTER_ID = os.getenv('ADMIN_ID')
 
-# --- 📖 帮助菜单 (Detailed Help) ---
+# --- 📖 帮助菜单 (ภาษาจีน แต่ Command เป็นภาษาอังกฤษ) ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
     role = get_user_role(uid, cid)
-    msg = "🍎 **黑糖果 HR & 薪酬管理系统手册**\n━━━━━━━━━━━━━━━━━━\n\n👤 **【员工指令】**\n1️⃣ **入职注册**: `/注册 [姓名]`\n2️⃣ **上班下班**: `/上班` | `/下班`\n3️⃣ **休息计时**: `/洗手间` | `/抽烟`\n4️⃣ **请假辞职**: `/请假 [类型] [原因]` | `/辞职`\n5️⃣ **状态查询**: `/状态`\n\n"
+    msg = "🍎 **黑糖果 HR & 薪酬管理系统手册**\n━━━━━━━━━━━━━━━━━━\n\n👤 **【员工指令】**\n1️⃣ **注册**: `/register [姓名]`\n2️⃣ **签到**: `/in` (上班) | `/out` (下班)\n3️⃣ **休息**: `/toilet` (洗手间) | `/smoke` (抽烟)\n4️⃣ **假/辞**: `/leave [类型] [原因]` | `/resign` (辞职)\n5️⃣ **状态**: `/status` (查看今日统计)\n\n"
     if role in ['admin', 'master']:
-        msg += "👮 **【管理员指令】**\n1️⃣ **考勤设置**: `/设置工时 08:00-17:00` | `/设置休息日 Sunday`\n2️⃣ **休息限时**: `/设置洗手间时限 15` | `/设置抽烟时限 10`\n3️⃣ **薪资设置**: `/设置薪资 @user 30000` | `/设置全勤奖 3000`\n4️⃣ **报表管理**: `/当日报表` | `/月度结算` | `/开除 @user`\n\n"
+        msg += "👮 **【管理员指令】**\n1️⃣ **考勤**: `/set_work 08:00-17:00` | `/set_off Sunday`\n2️⃣ **薪资**: `/set_salary @user 30000` | `/set_bonus 3000`\n3️⃣ **限时**: `/set_toilet 15` | `/set_smoke 10`\n4️⃣ **报表**: `/report_day` | `/report_month` | `/fire @user`\n\n"
     if role == 'master':
-        msg += "👑 **【主管理员特权】**\n• `/设置管理员 @用户名 [天数]`\n\n"
-    msg += "━━━━━━━━━━━━━━━━━━\n💡 提示: 必须先 `/上班` 才能使用休息计时功能。"
+        msg += "👑 **【主管理员特权】**\n• `/setadmin @用户名 [天数]`\n\n"
+    msg += "━━━━━━━━━━━━━━━━━━\n💡 提示: 请确保先使用 `/in` 开启今日工时。"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 # --- 👤 员工功能 ---
@@ -29,7 +28,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
     username = update.effective_user.username or str(uid)
     full_name = " ".join(context.args)
-    if not full_name: return await update.message.reply_text("⚠️ 请输入姓名！例: `/注册 张三`")
+    if not full_name: return await update.message.reply_text("⚠️ 请输入姓名！例: `/register 张三`")
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("INSERT INTO users (user_id, chat_id, username, full_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, chat_id) DO UPDATE SET full_name = EXCLUDED.full_name, is_active = TRUE", (uid, cid, username, full_name))
     conn.commit(); cursor.close(); conn.close()
@@ -39,7 +38,7 @@ async def work_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
     role = get_user_role(uid, cid)
     if role == "fired": return await update.message.reply_text("🚫 您已被开除。")
-    if not role: return await update.message.reply_text("❌ 请先 `/注册`。")
+    if not role: return await update.message.reply_text("❌ 请先 `/register`。")
     now = datetime.now(BKK_TZ).replace(second=0, microsecond=0)
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT work_hours FROM chat_settings WHERE chat_id = %s", (cid,))
@@ -55,36 +54,30 @@ async def work_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await update.message.reply_text("⚠️ 今日已签到。")
     finally: cursor.close(); conn.close()
 
-async def work_out(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid, cid = update.effective_user.id, update.effective_chat.id
-    now = datetime.now(BKK_TZ)
-    conn = get_db_connection(); cursor = conn.cursor()
-    cursor.execute("UPDATE attendance SET check_out = %s WHERE user_id = %s AND chat_id = %s AND work_date = %s", (now, uid, cid, now.date()))
-    conn.commit(); cursor.close(); conn.close()
-    await update.message.reply_text("🏁 下班签退成功！辛苦了。")
-
 async def activity_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
     if not get_user_role(uid, cid): return
     cmd = update.message.text
-    act_type = 'toilet' if '洗手间' in cmd else 'smoke'
+    act_type = 'toilet' if 'toilet' in cmd else 'smoke'
     now = datetime.now(BKK_TZ)
     conn = get_db_connection(); cursor = conn.cursor()
     cursor.execute("SELECT id FROM attendance WHERE user_id = %s AND work_date = %s", (uid, now.date()))
-    if not cursor.fetchone(): return await update.message.reply_text("⚠️ 请先签到 (/上班) 后再操作。")
+    if not cursor.fetchone(): return await update.message.reply_text("⚠️ 请先签到 (/in) 后再操作。")
     cursor.execute("SELECT id FROM activity_logs WHERE user_id = %s AND type = %s AND end_at IS NULL", (uid, act_type))
     active_log = cursor.fetchone()
     if active_log:
         cursor.execute("UPDATE activity_logs SET end_at = %s WHERE id = %s", (now, active_log[0]))
-        text = f"✅ {'洗手间' if act_type=='toilet' else '抽烟'} 结束。"
+        text = "✅ 休息计时结束。"
     else:
         cursor.execute("INSERT INTO activity_logs (user_id, chat_id, type, start_at) VALUES (%s, %s, %s, %s)", (uid, cid, act_type, now))
-        text = f"⏳ {'洗手间' if act_type=='toilet' else '抽烟'} 开始计时，请勿超时。"
+        text = "⏳ 休息开始计时..."
     conn.commit(); cursor.close(); conn.close()
     await update.message.reply_text(text)
 
 async def monitor_overtime(context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    if not conn: return
+    cursor = conn.cursor()
     cursor.execute("SELECT chat_id FROM chat_settings")
     chats = cursor.fetchall()
     for (cid,) in chats:
@@ -97,14 +90,13 @@ async def monitor_overtime(context: ContextTypes.DEFAULT_TYPE):
 def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler(["帮助", "start"], help_command))
-    app.add_handler(CommandHandler("注册", register))
-    app.add_handler(CommandHandler("上班", work_in))
-    app.add_handler(CommandHandler("下班", work_out))
-    app.add_handler(CommandHandler(["洗手间", "抽烟"], activity_toggle))
-    # ตั้งค่าให้ตรวจสอบคนพักเกินเวลาทุกๆ 1 นาที
+    app.add_handler(CommandHandler(["help", "start"], help_command))
+    app.add_handler(CommandHandler("register", register))
+    app.add_handler(CommandHandler("in", work_in))
+    app.add_handler(CommandHandler("out", lambda u, c: None))
+    app.add_handler(CommandHandler(["toilet", "smoke"], activity_toggle))
     app.job_queue.run_repeating(monitor_overtime, interval=60, first=10)
-    print("🚀 Black Candy HR System Online (Chinese Commands)...")
+    print("🚀 Black Candy HR System Online...")
     app.run_polling()
 
 if __name__ == '__main__': main()
