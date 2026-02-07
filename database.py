@@ -7,9 +7,9 @@ import pytz
 BKK_TZ = pytz.timezone('Asia/Bangkok')
 
 def get_db_connection():
-    """连接到 PostgreSQL 数据库 (优先使用 Public URL)"""
+    """优先使用 Public URL 连接数据库，确保稳定性"""
     try:
-        # ดึงค่าจากตัวแปรที่ Railway สร้างให้
+        # ดึงค่าจาก DATABASE_PUBLIC_URL ที่ Railway สร้างให้
         db_url = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
         if not db_url:
             print("❌ Error: DATABASE_URL variable is missing!")
