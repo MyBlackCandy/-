@@ -4,7 +4,8 @@ import logging
 from datetime import datetime, time, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from database import get_db_connection, get_user_role, get_monthly_stats, BKK_TZ, get_overtime_activities, init_db
+# นำเข้าฟังก์ชันจากไฟล์ใหม่ db_manager.py
+from db_manager import get_db_conn, fetch_user_role, fetch_monthly_stats, BKK_TZ, fetch_overtime_alerts, init_db_tables
 
 # --- ⚙️ 系统配置 ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -12,37 +13,37 @@ TOKEN = os.getenv('TOKEN')
 MASTER_ID = os.getenv('ADMIN_ID')
 
 # --- 📖 帮助菜单 (Command เป็นภาษาอังกฤษตามกฎ Telegram) ---
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
-    role = get_user_role(uid, cid)
-    msg = "🍎 **黑糖果 HR & 薪酬管理系统手册**\n━━━━━━━━━━━━━━━━━━\n\n👤 **【员工指令】**\n1️⃣ **注册**: `/register [姓名]`\n2️⃣ **签到**: `/in` (上班) | `/out` (下班)\n3️⃣ **休息**: `/toilet` (洗手间) | `/smoke` (抽烟)\n4️⃣ **假/辞**: `/leave [类型] [原因]` | `/resign` (离职申请)\n5️⃣ **状态**: `/status` (查看今日统计)\n\n"
+    role = fetch_user_role(uid, cid)
+    msg = "🍎 **黑糖果 HR & 薪酬管理系统手册**\n━━━━━━━━━━━━━━━━━━\n\n👤 **【员工指令】**\n1️⃣ **注册**: `/register [姓名]`\n2️⃣ **上班下班**: `/in` | `/out`\n3️⃣ **休息**: `/toilet` | `/smoke`\n4️⃣ **假/辞**: `/leave` | `/resign`\n5️⃣ **状态**: `/status`\n\n"
     if role in ['admin', 'master']:
-        msg += "👮 **【管理员指令】**\n1️⃣ **考勤**: `/set_work 08:00-17:00` | `/set_off Sunday`\n2️⃣ **薪资**: `/set_salary @user 30000` | `/set_bonus 3000`\n3️⃣ **限时**: `/set_toilet 15` | `/set_smoke 10`\n4️⃣ **报表**: `/report_day` | `/report_month` | `/fire @user`\n\n"
+        msg += "👮 **【管理员指令】**\n1️⃣ **考勤**: `/set_work` | `/set_off`\n2️⃣ **薪资**: `/set_salary` | `/set_bonus`\n3️⃣ **限时**: `/set_toilet` | `/set_smoke`\n4️⃣ **报表**: `/report_day` | `/report_month` | `/fire @user`\n\n"
     if role == 'master':
         msg += "👑 **【主管理员特权】**\n• `/setadmin @用户名 [天数]`\n\n"
     msg += "━━━━━━━━━━━━━━━━━━\n💡 提示: 请确保先使用 `/in` 开启今日工时。"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 # --- 👤 员工功能 ---
-async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def user_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
     username = update.effective_user.username or str(uid)
     full_name = " ".join(context.args)
     if not full_name: return await update.message.reply_text("⚠️ 请输入姓名！例: `/register 张三`")
-    conn = get_db_connection()
+    conn = get_db_conn()
     if not conn: return
     cursor = conn.cursor()
     cursor.execute("INSERT INTO users (user_id, chat_id, username, full_name) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id, chat_id) DO UPDATE SET full_name = EXCLUDED.full_name, is_active = TRUE", (uid, cid, username, full_name))
     conn.commit(); cursor.close(); conn.close()
     await update.message.reply_text(f"✅ 注册成功！姓名: {full_name}")
 
-async def work_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def user_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
-    role = get_user_role(uid, cid)
+    role = fetch_user_role(uid, cid)
     if role == "fired": return await update.message.reply_text("🚫 您已被开除。")
     if not role: return await update.message.reply_text("❌ 请先 `/register`。")
     now = datetime.now(BKK_TZ).replace(second=0, microsecond=0)
-    conn = get_db_connection()
+    conn = get_db_conn()
     if not conn: return
     cursor = conn.cursor()
     cursor.execute("SELECT work_hours FROM chat_settings WHERE chat_id = %s", (cid,))
@@ -58,13 +59,13 @@ async def work_in(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await update.message.reply_text("⚠️ 今日已签到。")
     finally: cursor.close(); conn.close()
 
-async def activity_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def break_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid, cid = update.effective_user.id, update.effective_chat.id
-    if not get_user_role(uid, cid): return
+    if not fetch_user_role(uid, cid): return
     cmd = update.message.text
     act_type = 'toilet' if 'toilet' in cmd else 'smoke'
     now = datetime.now(BKK_TZ)
-    conn = get_db_connection()
+    conn = get_db_conn()
     if not conn: return
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM attendance WHERE user_id = %s AND work_date = %s", (uid, now.date()))
@@ -80,38 +81,31 @@ async def activity_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit(); cursor.close(); conn.close()
     await update.message.reply_text(text)
 
-# --- ⏲️ ระบบแจ้งเตือนอัตโนมัติ ---
-async def monitor_overtime(context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db_connection()
+async def check_overtime(context: ContextTypes.DEFAULT_TYPE):
+    conn = get_db_conn()
     if not conn: return
     cursor = conn.cursor()
     cursor.execute("SELECT chat_id FROM chat_settings")
     chats = cursor.fetchall()
     for (cid,) in chats:
-        overtimes = get_overtime_activities(cid)
+        overtimes = fetch_overtime_alerts(cid)
         for ot in overtimes:
             try: await context.bot.send_message(cid, f"🚨 **超时警告**\n👤 @{ot['username']} {ot['type']} 已超时 {ot['duration']} 分钟！")
             except: pass
     cursor.close(); conn.close()
 
 def main():
-    # 1. สร้างตารางฐานข้อมูล
-    init_db()
-    
-    # 2. เริ่มต้นบอท
+    init_db_tables()
     app = Application.builder().token(TOKEN).build()
     
-    # 3. ตรวจสอบว่า JobQueue พร้อมใช้งานหรือไม่
+    # แก้ปัญหา AttributeError: 'NoneType'
     if app.job_queue:
-        app.job_queue.run_repeating(monitor_overtime, interval=60, first=10)
-    else:
-        print("⚠️ Warning: JobQueue is not available. Overtime monitoring disabled.")
+        app.job_queue.run_repeating(check_overtime, interval=60, first=10)
     
-    app.add_handler(CommandHandler(["help", "start"], help_command))
-    app.add_handler(CommandHandler("register", register))
-    app.add_handler(CommandHandler("in", work_in))
-    app.add_handler(CommandHandler("out", lambda u, c: None))
-    app.add_handler(CommandHandler(["toilet", "smoke"], activity_toggle))
+    app.add_handler(CommandHandler(["help", "start"], help_cmd))
+    app.add_handler(CommandHandler("register", user_register))
+    app.add_handler(CommandHandler("in", user_in))
+    app.add_handler(CommandHandler(["toilet", "smoke"], break_toggle))
     
     print("🚀 Black Candy HR System is starting...")
     app.run_polling()
