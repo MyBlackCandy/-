@@ -7,15 +7,14 @@ import pytz
 BKK_TZ = pytz.timezone('Asia/Bangkok')
 
 def get_db_connection():
-    """连接到 PostgreSQL 数据库 (优先使用 Public URL 以确保稳定性)"""
+    """连接到 PostgreSQL 数据库 (优先使用 Public URL)"""
     try:
-        # พยายามดึง Public URL ก่อน ถ้าไม่มีค่อยใช้ Internal URL จาก Railway
+        # ดึงค่าจากตัวแปรที่ Railway สร้างให้
         db_url = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
         if not db_url:
-            print("❌ Error: No database URL found in variables!")
+            print("❌ Error: DATABASE_URL variable is missing!")
             return None
         
-        # ปรับรูปแบบ URL ให้รองรับ psycopg2
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
             
